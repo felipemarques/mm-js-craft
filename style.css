@@ -51,6 +51,39 @@ html, body {
   color: #c8d3e0;
 }
 
+#crosshair {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  width: 16px;
+  height: 16px;
+  margin-left: -8px;
+  margin-top: -8px;
+  pointer-events: none;
+}
+
+#crosshair::before,
+#crosshair::after {
+  content: '';
+  position: absolute;
+  background: rgba(230, 237, 247, 0.85);
+  box-shadow: 0 0 4px rgba(0, 0, 0, 0.3);
+}
+
+#crosshair::before {
+  width: 16px;
+  height: 2px;
+  top: 7px;
+  left: 0;
+}
+
+#crosshair::after {
+  width: 2px;
+  height: 16px;
+  top: 0;
+  left: 7px;
+}
+
 #start-btn {
   margin-top: 12px;
   padding: 10px 16px;

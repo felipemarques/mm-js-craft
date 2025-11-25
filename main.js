@@ -34,6 +34,7 @@ renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.outputEncoding = THREE.sRGBEncoding;
 document.body.appendChild(renderer.domElement);
+renderer.domElement.tabIndex = 1; // garante foco para eventos de teclado/mouse
 
 const ambientLight = new THREE.AmbientLight(0xffffff, 0.65);
 scene.add(ambientLight);
@@ -331,7 +332,8 @@ function removeBlock() {
 }
 
 window.addEventListener('mousedown', (e) => {
-  if (document.pointerLockElement !== renderer.domElement) return;
+  // Permite interação mesmo sem pointer lock, mas não quando overlay de instruções está ativo.
+  if (!instructions.classList.contains('hidden') && document.pointerLockElement !== renderer.domElement) return;
   if (e.button === 0) {
     placeBlock();
   } else if (e.button === 2) {
