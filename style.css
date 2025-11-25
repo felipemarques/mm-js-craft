@@ -24,6 +24,42 @@ html, body {
   pointer-events: none;
 }
 
+#info-panel {
+  position: fixed;
+  top: 12px;
+  right: 12px;
+  min-width: 240px;
+  max-width: 360px;
+  padding: 12px 14px;
+  background: rgba(12, 16, 24, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  backdrop-filter: blur(6px);
+  font-size: 13px;
+  line-height: 1.5;
+  pointer-events: none;
+  transition: opacity 0.2s ease;
+}
+
+#info-panel.hidden {
+  opacity: 0;
+}
+
+.info-item + .info-item {
+  margin-top: 8px;
+}
+
+.info-label {
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 11px;
+  color: #92a4c4;
+}
+
+.info-text {
+  color: #e6edf7;
+}
+
 #instructions {
   position: fixed;
   inset: 0;
