@@ -24,6 +24,8 @@ const NPC_HEIGHT = 1.6;
 const NPC_RADIUS = 0.3;
 const NPC_STEP_HEIGHT = 0.6;
 const NPC_JUMP = 10; // salto mais alto que 1 bloco
+const ARROW_SPEED = 28;
+const ARROW_GRAVITY = GRAVITY;
 let touchEnabled = false;
 const touchMove = new THREE.Vector2();
 const touchLook = new THREE.Vector2();
@@ -57,6 +59,7 @@ scene.background = new THREE.Color(0x162032);
 scene.fog = new THREE.Fog(0x162032, 70, 200);
 
 const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.1, 400);
+scene.add(camera);
 
 const renderer = new THREE.WebGLRenderer({ antialias: false });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
@@ -358,6 +361,7 @@ const tmpFaceNormal = new THREE.Vector3();
 const tmpPoint = new THREE.Vector3();
 const tmpVec2 = new THREE.Vector2();
 const tmpPos = new THREE.Vector3();
+const tmpDir = new THREE.Vector3();
 const infoRecords = new Map();
 let infoVisible = true;
 let infoDirty = true;
@@ -377,6 +381,19 @@ const paletteConfig = [
 ];
 const raycaster = new THREE.Raycaster();
 const centerMouse = new THREE.Vector2(0, 0);
+const arrows = [];
+const arrowGeo = new THREE.BoxGeometry(0.08, 0.08, 1.4);
+const arrowMatShaft = new THREE.MeshLambertMaterial({ color: 0x6b4b2a });
+const arrowMatTip = new THREE.MeshLambertMaterial({ color: 0xcfd4d8 });
+const arrowTipGeo = new THREE.BoxGeometry(0.12, 0.12, 0.24);
+let bowMesh = null;
+let arrowCharging = false;
+let arrowCharge = 0;
+const ARROW_CHARGE_MAX = 1.5;
+const ARROW_FORCE_MIN = 0.45;
+const ARROW_FORCE_MAX = 1.3;
+const hudChargeBar = document.getElementById('charge-bar');
+const hudChargeFill = document.getElementById('charge-fill');
 
 function renderInfoPanel() {
   if (!hudInfo) return;
@@ -434,7 +451,7 @@ function toggleInfoVisibility() {
 
 function refreshStaticInfo() {
   const touchControls = 'Joystick esquerdo move, direito olha; botões Pular/Colocar/Remover.';
-  const kbControls = 'WASD mover, Espaço pular, Shift correr, clique esq. coloca, dir. remove, scroll troca bloco.';
+  const kbControls = 'WASD mover, Espaço pular, Shift correr, clique esq. coloca, dir. remove, scroll troca bloco, F atira flecha.';
   setInfoRecord('controls', { label: 'Controles', text: touchEnabled ? touchControls : kbControls });
   setInfoRecord('hud', { label: 'HUD', text: 'Pressione H para mostrar/ocultar este painel.' });
   setInfoRecord('input', { label: 'Entrada', text: touchEnabled ? 'Toque/HUD na tela' : 'Mouse + teclado' });
@@ -495,9 +512,21 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'KeyH') {
     toggleInfoVisibility();
   }
+  if (e.code === 'KeyF') {
+    if (!arrowCharging) {
+      arrowCharging = true;
+      arrowCharge = 0;
+      if (hudChargeBar) hudChargeBar.classList.remove('hidden');
+    }
+  }
   if (e.code === 'Space') e.preventDefault();
 });
-window.addEventListener('keyup', (e) => keys.delete(e.code));
+window.addEventListener('keyup', (e) => {
+  if (e.code === 'KeyF' && arrowCharging) {
+    shootArrow();
+  }
+  keys.delete(e.code);
+});
 
 function handlePointerLock() {
   const locked = document.pointerLockElement === renderer.domElement;
@@ -627,6 +656,51 @@ function pickBlock() {
   tmpNormalMatrix.getNormalMatrix(hit.object.matrixWorld);
   tmpFaceNormal.copy(hit.face.normal).applyNormalMatrix(tmpNormalMatrix).normalize();
   return { point: hit.point.clone(), normal: tmpFaceNormal.clone() };
+}
+
+function makeArrow() {
+  const g = new THREE.Group();
+  const shaft = new THREE.Mesh(arrowGeo, arrowMatShaft);
+  g.add(shaft);
+  const tip = new THREE.Mesh(arrowTipGeo, arrowMatTip);
+  tip.position.z = 0.5;
+  g.add(tip);
+  g.userData.vel = new THREE.Vector3();
+  g.userData.stuck = false;
+  return g;
+}
+
+function shootArrow() {
+  if (!gameStarted) return;
+  arrowCharging = false;
+  if (hudChargeBar) hudChargeBar.classList.add('hidden');
+  const chargeRatio = Math.max(0, Math.min(1, arrowCharge / ARROW_CHARGE_MAX));
+  const force = THREE.MathUtils.lerp(ARROW_FORCE_MIN, ARROW_FORCE_MAX, chargeRatio);
+  arrowCharge = 0;
+  const arrow = makeArrow();
+  const eye = camera.position.clone();
+  const dir = tmpLook.set(
+    Math.sin(player.yaw) * Math.cos(player.pitch),
+    Math.sin(player.pitch),
+    Math.cos(player.yaw) * Math.cos(player.pitch),
+  ).normalize();
+  // offset levemente à direita/abaixo para não colidir com a câmera
+  const offset = tmpRight.set(-dir.z, 0, dir.x).multiplyScalar(0.15);
+  arrow.position.copy(eye).add(offset).addScaledVector(dir, 0.5);
+  arrow.userData.vel.copy(dir).multiplyScalar(ARROW_SPEED * force);
+  arrow.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), dir);
+  scene.add(arrow);
+  arrows.push(arrow);
+  if (arrows.length > 200) {
+    const old = arrows.shift();
+    if (old) {
+      if (old.parent) old.parent.remove(old);
+      old.traverse((child) => {
+        if (child.geometry) child.geometry.dispose();
+        if (child.material && child.material.dispose) child.material.dispose();
+      });
+    }
+  }
 }
 
 function getRemoveCoords() {
@@ -770,6 +844,64 @@ function aabbIntersectsBlockSized(pos, radius, height) {
     }
   }
   return false;
+}
+
+function arrowHitsNpc(point) {
+  if (!charactersGroup) return null;
+  for (const char of charactersGroup.children) {
+    const halfH = NPC_HEIGHT * 0.5;
+    if (point.y < char.position.y - halfH - 0.2 || point.y > char.position.y + halfH + 0.2) continue;
+    const dx = point.x - char.position.x;
+    const dz = point.z - char.position.z;
+    if (dx * dx + dz * dz <= (NPC_RADIUS + 0.05) * (NPC_RADIUS + 0.05)) {
+      return char;
+    }
+  }
+  return null;
+}
+
+function updateArrows(dt) {
+  const dirForward = new THREE.Vector3(0, 0, 1);
+  for (const arrow of arrows) {
+    if (arrow.userData.stuck) continue;
+    const vel = arrow.userData.vel;
+    vel.y -= ARROW_GRAVITY * dt;
+    const start = arrow.position.clone();
+    const end = tmpPos.copy(arrow.position).addScaledVector(vel, dt);
+    const step = end.clone().sub(start);
+    const dirNorm = step.lengthSq() > 1e-6 ? step.clone().normalize() : vel.clone().normalize();
+    let stuck = false;
+    const samples = [0.33, 0.66, 1];
+    for (const t of samples) {
+      const p = tmpPoint.copy(start).addScaledVector(step, t);
+      const bx = Math.floor(p.x);
+      const by = Math.floor(p.y);
+      const bz = Math.floor(p.z);
+      if (getBlock(bx, by, bz) !== BLOCK.AIR) {
+        arrow.position.copy(p);
+        stuck = true;
+        break;
+      }
+      const hitNpc = arrowHitsNpc(p);
+      if (hitNpc) {
+        const worldPoint = p.clone();
+        hitNpc.add(arrow);
+        hitNpc.worldToLocal(arrow.position.copy(worldPoint));
+        stuck = true;
+        break;
+      }
+    }
+    if (!stuck) {
+      arrow.position.copy(end);
+      arrow.quaternion.setFromUnitVectors(dirForward, vel.clone().normalize());
+    } else {
+      if (dirNorm.lengthSq() > 1e-6) {
+        arrow.quaternion.setFromUnitVectors(dirForward, dirNorm);
+      }
+      arrow.userData.stuck = true;
+      arrow.userData.vel.set(0, 0, 0);
+    }
+  }
 }
 
 function attemptStep(axis, amount) {
@@ -916,6 +1048,14 @@ function animate() {
   applyPhysics(dt);
   updateVisibleChunks();
   updateCharacters(dt);
+  updateArrows(dt);
+  if (arrowCharging) {
+    arrowCharge = Math.min(ARROW_CHARGE_MAX, arrowCharge + dt);
+    const ratio = Math.max(0, Math.min(1, arrowCharge / ARROW_CHARGE_MAX));
+    if (hudChargeFill) hudChargeFill.style.width = `${(ratio * 100).toFixed(0)}%`;
+  } else if (hudChargeFill) {
+    hudChargeFill.style.width = '0%';
+  }
   updateHUD(dt);
   renderer.render(scene, camera);
 }
@@ -947,6 +1087,13 @@ function clearWorld() {
   chunkMeshes.clear();
   worldOverrides.clear();
   dirtyChunks.clear();
+  arrows.splice(0).forEach((arrow) => {
+    if (arrow.parent) arrow.parent.remove(arrow);
+    arrow.traverse((child) => {
+      if (child.geometry) child.geometry.dispose();
+      if (child.material && child.material.dispose) child.material.dispose();
+    });
+  });
   if (charactersGroup) {
     charactersGroup.traverse((child) => {
       if (child.isMesh) {
@@ -1038,7 +1185,28 @@ const charMat = {
   boot: new THREE.MeshLambertMaterial({ color: 0x2d2d2d }),
   pickHandle: new THREE.MeshLambertMaterial({ color: 0x72512f }),
   pickMetal: new THREE.MeshLambertMaterial({ color: 0xcfd4d8 }),
+  eye: new THREE.MeshLambertMaterial({ color: 0xffffff }),
+  pupil: new THREE.MeshLambertMaterial({ color: 0x111111 }),
+  mouth: new THREE.MeshLambertMaterial({ color: 0x993333 }),
 };
+
+function makeVoxelBow() {
+  const g = new THREE.Group();
+  const limb = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.8, 0.08), new THREE.MeshLambertMaterial({ color: 0x3b2b1c }));
+  limb.position.set(0, 0, 0);
+  limb.rotation.z = Math.PI * -0.2;
+  g.add(limb);
+  const limb2 = limb.clone();
+  limb2.rotation.z = Math.PI * 0.2;
+  g.add(limb2);
+  const grip = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.25, 0.12), new THREE.MeshLambertMaterial({ color: 0x6b4b2a }));
+  grip.position.set(0, -0.05, 0.1);
+  g.add(grip);
+  const string = new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.9, 0.02), new THREE.MeshLambertMaterial({ color: 0xcfd4d8 }));
+  string.position.set(0, 0.05, -0.02);
+  g.add(string);
+  return g;
+}
 
 function makeVoxelChar() {
   const g = new THREE.Group();
@@ -1049,6 +1217,18 @@ function makeVoxelChar() {
   const head = new THREE.Mesh(charGeo.head, charMat.skin);
   head.position.set(0, 1.65, 0);
   visual.add(head);
+  // Face
+  const eyeWhiteL = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.12, 0.01), charMat.eye);
+  eyeWhiteL.position.set(-0.12, 1.72, 0.31);
+  const eyeWhiteR = eyeWhiteL.clone();
+  eyeWhiteR.position.x = 0.12;
+  const pupilL = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.06, 0.02), charMat.pupil);
+  pupilL.position.set(-0.12, 1.72, 0.32);
+  const pupilR = pupilL.clone();
+  pupilR.position.x = 0.12;
+  const mouth = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.06, 0.02), charMat.mouth);
+  mouth.position.set(0, 1.55, 0.31);
+  visual.add(eyeWhiteL, eyeWhiteR, pupilL, pupilR, mouth);
   // Hair cap
   const hair = new THREE.Mesh(charGeo.head, charMat.hair);
   hair.scale.set(1.02, 1.02, 1.02);
@@ -1301,6 +1481,11 @@ function buildPalette() {
   // default selection
   if (paletteEl.firstChild) paletteEl.firstChild.classList.add('selected');
 }
+
+bowMesh = makeVoxelBow();
+camera.add(bowMesh);
+bowMesh.position.set(0.42, -0.42, -0.75);
+bowMesh.rotation.set(-0.15, Math.PI * 0.08, Math.PI * 0.02);
 
 buildPalette();
 loadSavedSettings();

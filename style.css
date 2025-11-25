@@ -24,6 +24,30 @@ html, body {
   pointer-events: none;
 }
 
+#charge-bar {
+  position: relative;
+  width: 160px;
+  height: 10px;
+  margin-top: 8px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  transition: opacity 0.15s ease;
+}
+
+#charge-bar.hidden {
+  opacity: 0;
+}
+
+#charge-fill {
+  width: 0%;
+  height: 100%;
+  background: linear-gradient(90deg, #5ce1ff, #34d399, #facc15);
+  box-shadow: 0 0 8px rgba(92, 225, 255, 0.4);
+  transition: width 0.05s linear;
+}
+
 #info-panel {
   position: fixed;
   top: 12px;
