@@ -12,12 +12,45 @@
     <div id="pos"></div>
   </div>
   <div id="crosshair"></div>
+  <div id="free-cursor"></div>
+  <div id="touch-ui">
+    <div id="joy-move" class="joystick">
+      <div class="knob"></div>
+    </div>
+    <div id="joy-look" class="joystick">
+      <div class="knob"></div>
+    </div>
+    <div id="touch-buttons">
+      <button id="btn-jump">Pular</button>
+      <button id="btn-place">Colocar</button>
+      <button id="btn-remove">Remover</button>
+    </div>
+  </div>
   <div id="instructions">
     <h1>Voxel Craft</h1>
     <p>Clique para capturar o mouse e jogar.</p>
     <p>WASD para mover, Espaço para pular, Shift para correr, Mouse para olhar.</p>
+    <label for="touch-desktop">
+      <input type="checkbox" id="touch-desktop">
+      Ativar controles touch no desktop
+    </label>
+    <label for="game-mode">Modo de jogo:</label>
+    <select id="game-mode">
+      <option value="terrain" selected>Terreno montanhoso</option>
+      <option value="flat">Planície com árvores</option>
+    </select>
+    <label for="map-size">Tamanho do mapa:</label>
+    <select id="map-size">
+      <option value="32">32 x 32</option>
+      <option value="48">48 x 48</option>
+      <option value="64" selected>64 x 64</option>
+      <option value="96">96 x 96</option>
+      <option value="128">128 x 128</option>
+    </select>
     <button id="start-btn">Começar</button>
   </div>
+  <footer id="footer-note">Código gerado com IA.</footer>
+  <div id="palette"></div>
   <script type="module" src="main.js"></script>
 </body>
 </html>

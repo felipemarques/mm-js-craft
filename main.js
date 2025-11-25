@@ -1,10 +1,12 @@
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.161.0/build/three.module.js';
 
 // ---------- Configurações principais ----------
-const WORLD_SIZE = 64; // blocos por eixo X/Z
+const DEFAULT_WORLD_SIZE = 64; // blocos por eixo X/Z
 const CHUNK_SIZE = 16;
 const VIEW_DISTANCE_CHUNKS = 3; // raio de chunks carregados
 const BLOCK_SIZE = 1;
+let WORLD_HEIGHT = 48;
+let gameStarted = false;
 const PLAYER_HEIGHT = 1.8;
 const PLAYER_RADIUS = 0.35;
 const STEP_HEIGHT = 0.6; // altura máxima do degrau (≈1 bloco)
@@ -12,15 +14,39 @@ const GRAVITY = 30;
 const WALK_SPEED = 6;
 const RUN_SPEED = 9;
 const JUMP_FORCE = 12; // pulo mais alto
-const WORLD_MIN = -WORLD_SIZE / 2;
-const WORLD_MAX = WORLD_MIN + WORLD_SIZE;
+let WORLD_SIZE = DEFAULT_WORLD_SIZE;
+let WORLD_MIN = -WORLD_SIZE / 2;
+let WORLD_MAX = WORLD_MIN + WORLD_SIZE;
 const INTERACT_DISTANCE = 8;
+let gameMode = 'terrain';
+const NPC_SPEED = 1.6;
+const NPC_HEIGHT = 1.6;
+const NPC_RADIUS = 0.3;
+const NPC_STEP_HEIGHT = 0.6;
+const NPC_JUMP = 7;
+let touchEnabled = false;
+const touchMove = new THREE.Vector2();
+const touchLook = new THREE.Vector2();
+let jumpQueued = false;
+let placeQueued = false;
+let removeQueued = false;
 
 // ---------- DOM / HUD ----------
 const hudStats = document.getElementById('stats');
 const hudPos = document.getElementById('pos');
 const instructions = document.getElementById('instructions');
 const startBtn = document.getElementById('start-btn');
+const gameModeSelect = document.getElementById('game-mode');
+const mapSizeSelect = document.getElementById('map-size');
+const touchDesktopCheckbox = document.getElementById('touch-desktop');
+const paletteEl = document.getElementById('palette');
+const freeCursor = document.getElementById('free-cursor');
+const touchUI = document.getElementById('touch-ui');
+const joyMove = document.getElementById('joy-move');
+const joyLook = document.getElementById('joy-look');
+const btnJump = document.getElementById('btn-jump');
+const btnPlace = document.getElementById('btn-place');
+const btnRemove = document.getElementById('btn-remove');
 
 // ---------- Cena básica ----------
 const scene = new THREE.Scene();
@@ -49,11 +75,24 @@ const chunkMaterial = new THREE.MeshLambertMaterial({ vertexColors: true, flatSh
 const chunkMeshes = new Map(); // chave "cx,cz" -> Mesh
 const tempColor = new THREE.Color();
 const worldOverrides = new Map(); // chave "x,y,z" -> tipo de bloco
+let cloudsGroup = null;
+let selectedBlock = 1;
+const dirtyChunks = new Set();
+let charactersGroup = null;
 
 const BLOCK = {
   AIR: 0,
   GRASS: 1,
   DIRT: 2,
+  STONE: 3,
+  SAND: 4,
+  SNOW: 5,
+  WOOD: 6,
+  LEAF: 7,
+  WATER: 8,
+  BRICK: 9,
+  GLOW: 10,
+  GLASS: 11,
 };
 
 // ---------- Utilidades de ruído leve (determinístico) ----------
@@ -63,6 +102,9 @@ function pseudoNoise(x, z) {
 }
 
 function getHeight(x, z) {
+  if (gameMode === 'flat') {
+    return 4;
+  }
   // Combinações de senoides e ruído barato para variar suavemente.
   const h1 = Math.sin((x + z) * 0.08) * 2.5;
   const h2 = Math.cos(x * 0.12) * 2.0 + Math.sin(z * 0.1) * 2.0;
@@ -86,9 +128,14 @@ function getBlock(x, y, z) {
   return BLOCK.DIRT;
 }
 
-function setBlock(x, y, z, type) {
+function markChunkDirty(cx, cz) {
+  dirtyChunks.add(`${cx},${cz}`);
+}
+
+function setBlock(x, y, z, type, { skipRebuild = false } = {}) {
   const key = `${x},${y},${z}`;
   if (!isInsideWorld(x, z)) return;
+  if (y < -1 || y >= WORLD_HEIGHT) return;
   if (type === BLOCK.AIR) {
     worldOverrides.set(key, BLOCK.AIR);
   } else {
@@ -96,6 +143,14 @@ function setBlock(x, y, z, type) {
   }
   const cx = Math.floor(x / CHUNK_SIZE);
   const cz = Math.floor(z / CHUNK_SIZE);
+  if (skipRebuild) {
+    markChunkDirty(cx, cz);
+    if (x % CHUNK_SIZE === 0) markChunkDirty(cx - 1, cz);
+    if ((x + 1) % CHUNK_SIZE === 0) markChunkDirty(cx + 1, cz);
+    if (z % CHUNK_SIZE === 0) markChunkDirty(cx, cz - 1);
+    if ((z + 1) % CHUNK_SIZE === 0) markChunkDirty(cx, cz + 1);
+    return;
+  }
   rebuildChunk(cx, cz);
   // Se estiver na borda, os chunks vizinhos precisam ser atualizados para revelar faces
   if (x % CHUNK_SIZE === 0) rebuildChunk(cx - 1, cz);
@@ -114,10 +169,22 @@ const FACE_DEFS = [
   { dir: [0, 0, -1], corners: [[0, 0, 0], [0, 1, 0], [1, 1, 0], [1, 0, 0]] }, // -Z
 ];
 
-function blockColor(type, y) {
-  if (type === BLOCK.GRASS) return tempColor.setRGB(0.56, 0.86, 0.34);
-  if (type === BLOCK.DIRT) return tempColor.setRGB(0.58, 0.42, 0.26);
-  return tempColor.setRGB(0.6, 0.6, 0.6);
+function blockColor(type, y, x = 0, z = 0) {
+  const shade = 0.9 + (pseudoNoise(x * 0.35, z * 0.35) - 0.5) * 0.12; // variação leve de "textura"
+  switch (type) {
+    case BLOCK.GRASS: return tempColor.setRGB(0.56, 0.86, 0.34).multiplyScalar(shade);
+    case BLOCK.DIRT: return tempColor.setRGB(0.58, 0.42, 0.26).multiplyScalar(shade);
+    case BLOCK.STONE: return tempColor.setRGB(0.55, 0.58, 0.6).multiplyScalar(shade);
+    case BLOCK.SAND: return tempColor.setRGB(0.92, 0.86, 0.6).multiplyScalar(shade);
+    case BLOCK.SNOW: return tempColor.setRGB(0.9, 0.95, 1.0).multiplyScalar(shade);
+    case BLOCK.WOOD: return tempColor.setRGB(0.45, 0.28, 0.12).multiplyScalar(shade);
+    case BLOCK.LEAF: return tempColor.setRGB(0.36, 0.72, 0.28).multiplyScalar(shade);
+    case BLOCK.WATER: return tempColor.setRGB(0.25, 0.55, 0.95).multiplyScalar(shade);
+    case BLOCK.BRICK: return tempColor.setRGB(0.72, 0.32, 0.28).multiplyScalar(shade);
+    case BLOCK.GLOW: return tempColor.setRGB(0.95, 0.9, 0.4).multiplyScalar(shade * 1.05);
+    case BLOCK.GLASS: return tempColor.setRGB(0.7, 0.9, 1.0).multiplyScalar(1.05);
+    default: return tempColor.setRGB(0.6, 0.6, 0.6).multiplyScalar(shade);
+  }
 }
 
 function buildChunkGeometry(cx, cz) {
@@ -134,9 +201,9 @@ function buildChunkGeometry(cx, cz) {
     const worldX = startX + x;
     for (let z = 0; z < CHUNK_SIZE; z++) {
       const worldZ = startZ + z;
-      const h = getHeight(worldX, worldZ);
-      for (let y = 0; y <= h; y++) {
-        const type = y === h ? BLOCK.GRASS : BLOCK.DIRT;
+      for (let y = -1; y < WORLD_HEIGHT; y++) {
+        const type = getBlock(worldX, y, worldZ);
+        if (type === BLOCK.AIR) continue;
         const bx = worldX;
         const by = y;
         const bz = worldZ;
@@ -146,7 +213,7 @@ function buildChunkGeometry(cx, cz) {
           const ny = by + face.dir[1];
           const nz = bz + face.dir[2];
           if (getBlock(nx, ny, nz) !== BLOCK.AIR) continue; // remove faces internas
-          const c = blockColor(type, y);
+          const c = blockColor(type, y, bx, bz);
           const corners = face.corners;
           // Dois triângulos por face
           for (let i = 0; i < 6; i++) {
@@ -250,6 +317,21 @@ const tmpTarget = new THREE.Vector3();
 const tmpNormalMatrix = new THREE.Matrix3();
 const tmpFaceNormal = new THREE.Vector3();
 const tmpPoint = new THREE.Vector3();
+const tmpVec2 = new THREE.Vector2();
+const tmpPos = new THREE.Vector3();
+const paletteConfig = [
+  { type: BLOCK.GRASS, label: 'Grass' },
+  { type: BLOCK.DIRT, label: 'Dirt' },
+  { type: BLOCK.STONE, label: 'Stone' },
+  { type: BLOCK.SAND, label: 'Sand' },
+  { type: BLOCK.SNOW, label: 'Snow' },
+  { type: BLOCK.WOOD, label: 'Wood' },
+  { type: BLOCK.LEAF, label: 'Leaf' },
+  { type: BLOCK.WATER, label: 'Water' },
+  { type: BLOCK.BRICK, label: 'Brick' },
+  { type: BLOCK.GLOW, label: 'Glow' },
+  { type: BLOCK.GLASS, label: 'Glass' },
+];
 const raycaster = new THREE.Raycaster();
 const centerMouse = new THREE.Vector2(0, 0);
 
@@ -260,8 +342,6 @@ function findSpawn() {
   return new THREE.Vector3(spawnX + 0.5, h + HALF_HEIGHT, spawnZ + 0.5);
 }
 
-player.position.copy(findSpawn());
-
 const keys = new Set();
 window.addEventListener('keydown', (e) => {
   keys.add(e.code);
@@ -270,29 +350,110 @@ window.addEventListener('keydown', (e) => {
 window.addEventListener('keyup', (e) => keys.delete(e.code));
 
 function handlePointerLock() {
-  if (document.pointerLockElement === renderer.domElement) {
+  const locked = document.pointerLockElement === renderer.domElement;
+  document.body.classList.toggle('unlocked', !locked);
+  if (touchEnabled) {
+    document.body.classList.add('touch-ui');
     instructions.classList.add('hidden');
-  } else {
+    return;
+  }
+  if (locked) {
+    instructions.classList.add('hidden');
+    freeCursor.style.display = 'none';
+  } else if (!gameStarted) {
     instructions.classList.remove('hidden');
+    freeCursor.style.display = 'block';
+  } else {
+    freeCursor.style.display = 'block';
   }
 }
 
 renderer.domElement.addEventListener('click', () => {
+  if (touchEnabled) return;
   renderer.domElement.requestPointerLock();
   // Em alguns browsers o pointer lock pode falhar; escondemos as instruções mesmo assim após o clique.
   instructions.classList.add('hidden');
 });
 
 function startGame() {
+  gameStarted = true;
+  const size = parseInt(mapSizeSelect.value, 10) || DEFAULT_WORLD_SIZE;
+  gameMode = gameModeSelect.value || 'terrain';
+  const prefersTouch = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+  touchEnabled = prefersTouch || touchDesktopCheckbox.checked;
+  document.body.classList.toggle('touch-ui', touchEnabled);
+  resetWorld(size);
   instructions.classList.add('hidden');
-  renderer.domElement.requestPointerLock();
-  renderer.domElement.focus();
+  if (!touchEnabled) {
+    renderer.domElement.requestPointerLock();
+    renderer.domElement.focus();
+  }
 }
 
 startBtn.addEventListener('click', startGame);
 
 // Impede menu de contexto para liberar o botão direito
 window.addEventListener('contextmenu', (e) => e.preventDefault());
+
+// Atualiza cursor livre quando não estiver em pointer lock
+document.addEventListener('mousemove', (e) => {
+  if (document.pointerLockElement === renderer.domElement) return;
+  freeCursor.style.transform = `translate(${e.clientX}px, ${e.clientY}px)`;
+});
+
+// ----- Controles touch -----
+function setupJoystick(pad, onChange) {
+  const knob = pad.querySelector('.knob');
+  const rect = () => pad.getBoundingClientRect();
+  let active = false;
+  let id = null;
+  function update(e) {
+    if (!active) return;
+    const r = rect();
+    const cx = r.left + r.width / 2;
+    const cy = r.top + r.height / 2;
+    const x = e.clientX - cx;
+    const y = e.clientY - cy;
+    const max = r.width * 0.35;
+    const clampedX = Math.max(-max, Math.min(max, x));
+    const clampedY = Math.max(-max, Math.min(max, y));
+    knob.style.transform = `translate(${clampedX}px, ${clampedY}px)`;
+    onChange(clampedX / max, clampedY / max);
+  }
+  function end() {
+    active = false;
+    id = null;
+    knob.style.transform = 'translate(0px, 0px)';
+    onChange(0, 0);
+  }
+  pad.addEventListener('pointerdown', (e) => {
+    if (id !== null) return;
+    active = true;
+    id = e.pointerId;
+    pad.setPointerCapture(id);
+    update(e);
+  });
+  pad.addEventListener('pointermove', (e) => {
+    if (e.pointerId !== id) return;
+    update(e);
+  });
+  pad.addEventListener('pointerup', (e) => {
+    if (e.pointerId !== id) return;
+    end();
+  });
+  pad.addEventListener('pointercancel', end);
+}
+
+setupJoystick(joyMove, (x, y) => {
+  touchMove.set(x, y * -1); // invert Y para frente
+});
+setupJoystick(joyLook, (x, y) => {
+  touchLook.set(x, y);
+});
+
+btnJump.addEventListener('click', () => { jumpQueued = true; });
+btnPlace.addEventListener('click', () => { placeQueued = true; });
+btnRemove.addEventListener('click', () => { removeQueued = true; });
 
 function pickBlock() {
   if (chunkMeshes.size === 0) return null;
@@ -308,32 +469,52 @@ function pickBlock() {
   return { point: hit.point.clone(), normal: tmpFaceNormal.clone() };
 }
 
-function placeBlock() {
+function getRemoveCoords() {
   const hit = pickBlock();
-  if (!hit) return;
-  tmpPoint.copy(hit.point).addScaledVector(hit.normal, 0.5);
-  const bx = Math.floor(tmpPoint.x);
-  const by = Math.floor(tmpPoint.y);
-  const bz = Math.floor(tmpPoint.z);
-  if (!isInsideWorld(bx, bz) || by < -8 || by > 60) return;
+  if (!hit) return null;
+  tmpPoint.copy(hit.point).addScaledVector(hit.normal, -0.001);
+  return {
+    bx: Math.floor(tmpPoint.x),
+    by: Math.floor(tmpPoint.y),
+    bz: Math.floor(tmpPoint.z),
+  };
+}
+
+function getPlaceCoords() {
+  const hit = pickBlock();
+  if (!hit) return null;
+  tmpPoint.copy(hit.point).addScaledVector(hit.normal, 0.51);
+  return {
+    bx: Math.floor(tmpPoint.x),
+    by: Math.floor(tmpPoint.y),
+    bz: Math.floor(tmpPoint.z),
+  };
+}
+
+function placeBlock() {
+  const target = getPlaceCoords();
+  if (!target) return;
+  const { bx, by, bz } = target;
+  if (!isInsideWorld(bx, bz) || by < -1 || by >= WORLD_HEIGHT) return;
   if (blockIntersectsPlayer(bx, by, bz)) return;
-  setBlock(bx, by, bz, BLOCK.GRASS);
+  setBlock(bx, by, bz, selectedBlock);
+  placeQueued = false;
 }
 
 function removeBlock() {
-  const hit = pickBlock();
-  if (!hit) return;
-  tmpPoint.copy(hit.point).addScaledVector(hit.normal, -0.01);
-  const bx = Math.floor(tmpPoint.x);
-  const by = Math.floor(tmpPoint.y);
-  const bz = Math.floor(tmpPoint.z);
+  const target = getRemoveCoords();
+  if (!target) return;
+  const { bx, by, bz } = target;
+  if (!isInsideWorld(bx, bz) || by < -1 || by >= WORLD_HEIGHT) return;
   if (getBlock(bx, by, bz) === BLOCK.AIR) return;
   setBlock(bx, by, bz, BLOCK.AIR);
+  removeQueued = false;
 }
 
 window.addEventListener('mousedown', (e) => {
   // Permite interação mesmo sem pointer lock, mas não quando overlay de instruções está ativo.
   if (!instructions.classList.contains('hidden') && document.pointerLockElement !== renderer.domElement) return;
+  renderer.domElement.focus();
   if (e.button === 0) {
     placeBlock();
   } else if (e.button === 2) {
@@ -401,6 +582,36 @@ function blockIntersectsPlayer(x, y, z) {
          maxZ > pMinZ && minZ < pMaxZ;
 }
 
+function aabbIntersectsBlockSized(pos, radius, height) {
+  const halfH = height * 0.5;
+  const minX = pos.x - radius;
+  const maxX = pos.x + radius;
+  const minY = pos.y - halfH;
+  const maxY = pos.y + halfH;
+  const minZ = pos.z - radius;
+  const maxZ = pos.z + radius;
+  for (let x = Math.floor(minX); x <= Math.floor(maxX); x++) {
+    for (let y = Math.floor(minY); y <= Math.floor(maxY); y++) {
+      for (let z = Math.floor(minZ); z <= Math.floor(maxZ); z++) {
+        if (getBlock(x, y, z) !== BLOCK.AIR) {
+          const bxMin = x;
+          const bxMax = x + 1;
+          const byMin = y;
+          const byMax = y + 1;
+          const bzMin = z;
+          const bzMax = z + 1;
+          if (maxX > bxMin && minX < bxMax &&
+              maxY > byMin && minY < byMax &&
+              maxZ > bzMin && minZ < bzMax) {
+            return true;
+          }
+        }
+      }
+    }
+  }
+  return false;
+}
+
 function attemptStep(axis, amount) {
   const saved = player.position[axis];
   const savedY = player.position.y;
@@ -430,8 +641,16 @@ function moveAxis(axis, amount) {
 }
 
 function applyPhysics(dt) {
+  if (touchEnabled && document.pointerLockElement !== renderer.domElement) {
+    const lookSpeed = 2.2;
+    player.yaw -= touchLook.x * lookSpeed * dt;
+    player.pitch -= touchLook.y * lookSpeed * dt;
+    const maxPitch = Math.PI / 2 - 0.05;
+    player.pitch = Math.max(-maxPitch, Math.min(maxPitch, player.pitch));
+  }
   tmpForward.set(Math.sin(player.yaw), 0, Math.cos(player.yaw));
-  tmpRight.set(tmpForward.z, 0, -tmpForward.x);
+  // right vetorial invertido para alinhar A=esquerda / D=direita
+  tmpRight.set(-tmpForward.z, 0, tmpForward.x);
   tmpMove.set(0, 0, 0);
 
   const speed = keys.has('ShiftLeft') || keys.has('ShiftRight') ? RUN_SPEED : WALK_SPEED;
@@ -439,6 +658,10 @@ function applyPhysics(dt) {
   if (keys.has('KeyS')) tmpMove.sub(tmpForward);
   if (keys.has('KeyA')) tmpMove.sub(tmpRight);
   if (keys.has('KeyD')) tmpMove.add(tmpRight);
+  if (touchEnabled && (touchMove.x !== 0 || touchMove.y !== 0)) {
+    tmpMove.addScaledVector(tmpRight, touchMove.x);
+    tmpMove.addScaledVector(tmpForward, touchMove.y);
+  }
   if (tmpMove.lengthSq() > 0) {
     tmpMove.normalize().multiplyScalar(speed);
   }
@@ -450,10 +673,13 @@ function applyPhysics(dt) {
 
   // gravidade e pulo
   player.velocity.y -= GRAVITY * dt;
-  if (player.onGround && keys.has('Space')) {
+  const wantsJump = keys.has('Space') || jumpQueued;
+  if (player.onGround && wantsJump) {
     player.velocity.y = JUMP_FORCE;
     player.onGround = false;
+    jumpQueued = false;
   }
+  jumpQueued = false;
 
   // Movimento horizontal com colisão + degrau
   moveAxis('x', player.velocity.x * dt);
@@ -510,6 +736,7 @@ function animate() {
   const dt = Math.min(0.05, clock.getDelta());
   applyPhysics(dt);
   updateVisibleChunks();
+  updateCharacters(dt);
   updateHUD(dt);
   renderer.render(scene, camera);
 }
@@ -521,5 +748,320 @@ window.addEventListener('resize', () => {
   renderer.setSize(window.innerWidth, window.innerHeight);
 });
 
+function clearWorld() {
+  if (cloudsGroup) {
+    cloudsGroup.traverse((child) => {
+      if (child.isMesh) {
+        child.geometry.dispose();
+        child.material.dispose();
+      }
+    });
+    scene.remove(cloudsGroup);
+    cloudsGroup = null;
+  }
+  for (const [, mesh] of chunkMeshes) {
+    scene.remove(mesh);
+    mesh.geometry.dispose();
+  }
+  chunkMeshes.clear();
+  worldOverrides.clear();
+  dirtyChunks.clear();
+  if (charactersGroup) {
+    charactersGroup.traverse((child) => {
+      if (child.isMesh) {
+        child.geometry.dispose();
+        child.material.dispose();
+      }
+    });
+    scene.remove(charactersGroup);
+    charactersGroup = null;
+  }
+}
+
+function regenerateClouds() {
+  const count = Math.floor((WORLD_SIZE * WORLD_SIZE) / 256);
+  const geom = new THREE.BoxGeometry(1, 1, 1);
+  const mat = new THREE.MeshLambertMaterial({ color: 0xffffff, transparent: true, opacity: 0.9 });
+  cloudsGroup = new THREE.Group();
+  const baseY = WORLD_HEIGHT * 0.7;
+  for (let i = 0; i < count; i++) {
+    const cx = WORLD_MIN + Math.random() * WORLD_SIZE;
+    const cz = WORLD_MIN + Math.random() * WORLD_SIZE;
+    const puffCount = 6 + Math.floor(Math.random() * 8);
+    for (let p = 0; p < puffCount; p++) {
+      const mesh = new THREE.Mesh(geom, mat);
+      mesh.position.set(
+        cx + (Math.random() - 0.5) * 6,
+        baseY + Math.random() * 4,
+        cz + (Math.random() - 0.5) * 6,
+      );
+      cloudsGroup.add(mesh);
+    }
+  }
+  scene.add(cloudsGroup);
+}
+
+function flushDirtyChunks() {
+  if (dirtyChunks.size === 0) return;
+  for (const key of dirtyChunks) {
+    const [cx, cz] = key.split(',').map(Number);
+    rebuildChunk(cx, cz);
+  }
+  dirtyChunks.clear();
+}
+
+function generateTrees() {
+  if (gameMode !== 'flat') return;
+  const count = Math.floor((WORLD_SIZE * WORLD_SIZE) / 150);
+  const minDistanceFromSpawn = 6;
+  const spawn = player.position;
+  for (let i = 0; i < count; i++) {
+    const x = Math.floor(WORLD_MIN + Math.random() * (WORLD_SIZE - 1));
+    const z = Math.floor(WORLD_MIN + Math.random() * (WORLD_SIZE - 1));
+    if (spawn.distanceToSquared(new THREE.Vector3(x + 0.5, spawn.y, z + 0.5)) < minDistanceFromSpawn * minDistanceFromSpawn) continue;
+    const h = getHeight(x, z);
+    const trunkHeight = 3 + Math.floor(Math.random() * 3);
+    for (let y = h + 1; y <= h + trunkHeight; y++) {
+      setBlock(x, y, z, BLOCK.WOOD, { skipRebuild: true });
+    }
+    const leafBase = h + trunkHeight;
+    for (let lx = -2; lx <= 2; lx++) {
+      for (let ly = 0; ly <= 2; ly++) {
+        for (let lz = -2; lz <= 2; lz++) {
+          if (Math.abs(lx) + Math.abs(lz) + ly > 4) continue; // forma mais esférica
+          const bx = x + lx;
+          const by = leafBase + ly;
+          const bz = z + lz;
+          if (!isInsideWorld(bx, bz) || by >= WORLD_HEIGHT) continue;
+          setBlock(bx, by, bz, BLOCK.LEAF, { skipRebuild: true });
+        }
+      }
+    }
+  }
+}
+
+// ---------- Personagens voxel ----------
+const charGeo = {
+  head: new THREE.BoxGeometry(0.6, 0.6, 0.6),
+  body: new THREE.BoxGeometry(0.7, 0.9, 0.4),
+  arm: new THREE.BoxGeometry(0.25, 0.8, 0.25),
+  leg: new THREE.BoxGeometry(0.28, 0.9, 0.28),
+  pick: new THREE.BoxGeometry(0.8, 0.1, 0.1),
+  pickHead: new THREE.BoxGeometry(0.4, 0.25, 0.15),
+};
+const charMat = {
+  skin: new THREE.MeshLambertMaterial({ color: 0xd8b28c }),
+  hair: new THREE.MeshLambertMaterial({ color: 0x4b2a17 }),
+  shirt: new THREE.MeshLambertMaterial({ color: 0x3aa7c3 }),
+  pants: new THREE.MeshLambertMaterial({ color: 0x335a9c }),
+  boot: new THREE.MeshLambertMaterial({ color: 0x2d2d2d }),
+  pickHandle: new THREE.MeshLambertMaterial({ color: 0x72512f }),
+  pickMetal: new THREE.MeshLambertMaterial({ color: 0xcfd4d8 }),
+};
+
+function makeVoxelChar() {
+  const g = new THREE.Group();
+  // Head
+  const head = new THREE.Mesh(charGeo.head, charMat.skin);
+  head.position.set(0, 1.65, 0);
+  g.add(head);
+  // Hair cap
+  const hair = new THREE.Mesh(charGeo.head, charMat.hair);
+  hair.scale.set(1.02, 1.02, 1.02);
+  hair.position.copy(head.position).add(new THREE.Vector3(0, 0.03, 0));
+  hair.castShadow = false;
+  g.add(hair);
+  // Body
+  const body = new THREE.Mesh(charGeo.body, charMat.shirt);
+  body.position.set(0, 0.9, 0);
+  g.add(body);
+  // Arms
+  const armL = new THREE.Mesh(charGeo.arm, charMat.skin);
+  armL.position.set(-0.48, 0.95, 0);
+  g.add(armL);
+  const armR = new THREE.Mesh(charGeo.arm, charMat.skin);
+  armR.position.set(0.48, 0.95, 0);
+  g.add(armR);
+  // Legs
+  const legL = new THREE.Mesh(charGeo.leg, charMat.pants);
+  legL.position.set(-0.18, 0.45, 0); // base no chão (altura 0.9 => vai de 0 a 0.9)
+  g.add(legL);
+  const legR = new THREE.Mesh(charGeo.leg, charMat.pants);
+  legR.position.set(0.18, 0.45, 0);
+  g.add(legR);
+  // Boots
+  const bootL = new THREE.Mesh(charGeo.leg, charMat.boot);
+  bootL.scale.y = 0.35; // ~0.315 altura
+  bootL.position.set(-0.18, 0.1575, 0); // vai de 0 a ~0.315
+  g.add(bootL);
+  const bootR = new THREE.Mesh(charGeo.leg, charMat.boot);
+  bootR.scale.y = 0.35;
+  bootR.position.set(0.18, 0.1575, 0);
+  g.add(bootR);
+  // Pickaxe
+  const pickHandle = new THREE.Mesh(charGeo.pick, charMat.pickHandle);
+  pickHandle.rotation.z = Math.PI * 0.25;
+  pickHandle.position.set(0.8, 1.2, 0.05);
+  g.add(pickHandle);
+  const pickHead = new THREE.Mesh(charGeo.pickHead, charMat.pickMetal);
+  pickHead.rotation.z = Math.PI * -0.25;
+  pickHead.position.set(1.0, 1.35, 0.05);
+  g.add(pickHead);
+  g.traverse((m) => { if (m.isMesh) m.castShadow = false; });
+  g.userData.heading = new THREE.Vector2((Math.random() * 2 - 1), (Math.random() * 2 - 1)).normalize();
+  g.userData.timer = 1 + Math.random() * 2;
+  g.userData.velY = 0;
+  g.userData.onGround = false;
+  return g;
+}
+
+function spawnCharacters() {
+  if (gameMode !== 'flat') return;
+  charactersGroup = new THREE.Group();
+  const spawnCount = Math.max(3, Math.floor(WORLD_SIZE / 24));
+  const minDistance = 5;
+  const playerPos = player.position.clone();
+  for (let i = 0; i < spawnCount; i++) {
+    const gx = WORLD_MIN + Math.random() * (WORLD_SIZE - 1);
+    const gz = WORLD_MIN + Math.random() * (WORLD_SIZE - 1);
+    const h = getHeight(Math.floor(gx), Math.floor(gz));
+    // h é o nível do bloco de topo; bloco ocupa [h, h+1). Posicionamos acima do bloco.
+    const pos = new THREE.Vector3(gx + 0.5, h + 1 + NPC_HEIGHT * 0.5 + 0.02, gz + 0.5);
+    if (pos.distanceToSquared(playerPos) < minDistance * minDistance) continue;
+    const char = makeVoxelChar();
+    char.position.copy(pos);
+    char.rotation.y = Math.random() * Math.PI * 2;
+    char.userData.onGround = true;
+    char.userData.velY = 0;
+    charactersGroup.add(char);
+  }
+  scene.add(charactersGroup);
+}
+
+function updateCharacters(dt) {
+  if (!charactersGroup) return;
+  const margin = 1.5;
+  charactersGroup.children.forEach((char) => {
+    if (!char.userData.heading) {
+      char.userData.heading = new THREE.Vector2(1, 0);
+      char.userData.timer = 1;
+      char.userData.velY = 0;
+      char.userData.onGround = false;
+    }
+    char.userData.timer -= dt;
+    if (char.userData.timer <= 0) {
+      const angle = Math.random() * Math.PI * 2;
+      char.userData.heading.set(Math.cos(angle), Math.sin(angle));
+      char.userData.timer = 1 + Math.random() * 2.5;
+    }
+    const move2D = char.userData.heading;
+    // impede saída do mundo
+    if (char.position.x < WORLD_MIN + margin || char.position.x > WORLD_MAX - margin ||
+        char.position.z < WORLD_MIN + margin || char.position.z > WORLD_MAX - margin) {
+      move2D.multiplyScalar(-1);
+    }
+
+    // Movimento horizontal com colisão e degrau
+    const moveX = move2D.x * NPC_SPEED * dt;
+    const moveZ = move2D.y * NPC_SPEED * dt;
+    const halfH = NPC_HEIGHT * 0.5;
+
+    const attemptStepNpc = (axis, amount) => {
+      const saved = char.position[axis];
+      const savedY = char.position.y;
+      char.position[axis] += amount;
+      char.position.y += NPC_STEP_HEIGHT;
+      const hit = aabbIntersectsBlockSized(char.position, NPC_RADIUS, NPC_HEIGHT);
+      if (!hit) return true;
+      char.position[axis] = saved;
+      char.position.y = savedY;
+      return false;
+    };
+
+    const moveAxisNpc = (axis, amount) => {
+      if (amount === 0) return false;
+      const saved = char.position[axis];
+      char.position[axis] += amount;
+      const hit = aabbIntersectsBlockSized(char.position, NPC_RADIUS, NPC_HEIGHT);
+      if (hit) {
+        if (char.userData.onGround && attemptStepNpc(axis, amount)) {
+          return false;
+        }
+        char.position[axis] = saved;
+        if (char.userData.onGround) {
+          char.userData.velY = NPC_JUMP;
+          char.userData.onGround = false;
+          // impulso para fora do buraco
+          char.position[axis] += amount * 0.25;
+        }
+        return true;
+      }
+      return false;
+    };
+
+    moveAxisNpc('x', moveX);
+    moveAxisNpc('z', moveZ);
+
+    // Gravidade
+    char.userData.velY -= GRAVITY * dt;
+    char.position.y += char.userData.velY * dt;
+    const hit = aabbIntersectsBlockSized(char.position, NPC_RADIUS, NPC_HEIGHT);
+    if (hit) {
+      if (char.userData.velY < 0) {
+        const bottom = char.position.y - halfH;
+        char.position.y = Math.floor(bottom) + 1 + halfH + 0.001;
+        char.userData.onGround = true;
+      } else if (char.userData.velY > 0) {
+        const top = char.position.y + halfH;
+        char.position.y = Math.floor(top) - halfH - 0.001;
+      }
+      char.userData.velY = 0;
+    } else {
+      char.userData.onGround = false;
+    }
+
+    // Se cair de borda de bloco, apenas deixa gravidade agir; sem snap forçado.
+    char.rotation.y = Math.atan2(move2D.x, move2D.y);
+  });
+}
+
+function resetWorld(size) {
+  WORLD_SIZE = size;
+  WORLD_MIN = -WORLD_SIZE / 2;
+  WORLD_MAX = WORLD_MIN + WORLD_SIZE;
+  WORLD_HEIGHT = Math.max(32, Math.min(80, Math.floor(size * 0.75)));
+  clearWorld();
+  player.position.copy(findSpawn());
+  player.velocity.set(0, 0, 0);
+  lastChunkX = null;
+  lastChunkZ = null;
+  generateTrees();
+  flushDirtyChunks();
+  updateVisibleChunks(true);
+  regenerateClouds();
+  spawnCharacters();
+}
+
+function buildPalette() {
+  paletteEl.innerHTML = '';
+  paletteConfig.forEach((item) => {
+    const btn = document.createElement('button');
+    btn.className = 'palette-item';
+    const c = blockColor(item.type, 0, 0, 0);
+    btn.style.background = `rgb(${Math.floor(c.r * 255)}, ${Math.floor(c.g * 255)}, ${Math.floor(c.b * 255)})`;
+    btn.title = item.label;
+    btn.addEventListener('click', () => {
+      selectedBlock = item.type;
+      document.querySelectorAll('.palette-item').forEach((el) => el.classList.remove('selected'));
+      btn.classList.add('selected');
+    });
+    paletteEl.appendChild(btn);
+  });
+  // default selection
+  if (paletteEl.firstChild) paletteEl.firstChild.classList.add('selected');
+}
+
+buildPalette();
+resetWorld(DEFAULT_WORLD_SIZE);
 updateVisibleChunks(true);
 animate();
