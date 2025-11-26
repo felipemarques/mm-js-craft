@@ -26,6 +26,9 @@ const NPC_STEP_HEIGHT = 0.6;
 const NPC_JUMP = 10; // salto mais alto que 1 bloco
 const ARROW_SPEED = 28;
 const ARROW_GRAVITY = GRAVITY;
+const SWORD_RANGE = 2.3;
+const SWORD_ARC = Math.PI * 0.6; // 108 graus
+const SWORD_COOLDOWN = 0.6;
 let touchEnabled = false;
 const touchMove = new THREE.Vector2();
 const touchLook = new THREE.Vector2();
@@ -34,6 +37,10 @@ let placeQueued = false;
 let removeQueued = false;
 let savedSettings = null;
 let desiredNpcCount = 5;
+let currentWeapon = 'bow';
+let swordCooldown = 0;
+const WEAPONS = { BOW: 'bow', SWORD: 'sword' };
+let swordSwing = 0;
 
 // ---------- DOM / HUD ----------
 const hudStats = document.getElementById('stats');
@@ -396,6 +403,7 @@ const arrowMatShaft = new THREE.MeshLambertMaterial({ color: 0x6b4b2a });
 const arrowMatTip = new THREE.MeshLambertMaterial({ color: 0xcfd4d8 });
 const arrowTipGeo = new THREE.BoxGeometry(0.12, 0.12, 0.24);
 let bowMesh = null;
+let swordMesh = null;
 let arrowCharging = false;
 let arrowCharge = 0;
 const ARROW_CHARGE_MAX = 1.5;
@@ -511,6 +519,7 @@ setInfoRecord('desempenho', { label: 'Desempenho', text: '-' });
 setInfoRecord('posicao', { label: 'Posição', text: '-' });
 setInfoRecord('mundo', { label: 'Mundo', text: '-' });
 setInfoRecord('bloco', { label: 'Bloco', text: '-' });
+setInfoRecord('arma', { label: 'Arma', text: 'Arco' });
 refreshStaticInfo();
 
 function findSpawn() {
@@ -526,7 +535,16 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'KeyH') {
     toggleInfoVisibility();
   }
-  if (e.code === 'KeyF') {
+  if (e.code === 'Digit1') {
+    setWeapon(WEAPONS.SWORD);
+  }
+  if (e.code === 'Digit2') {
+    setWeapon(WEAPONS.BOW);
+  }
+  if (e.code === 'KeyE') {
+    swordAttack();
+  }
+  if (e.code === 'KeyF' && currentWeapon === WEAPONS.BOW) {
     if (!arrowCharging) {
       arrowCharging = true;
       arrowCharge = 0;
@@ -665,6 +683,25 @@ setupJoystick(joyLook, (x, y) => {
 btnJump.addEventListener('click', () => { jumpQueued = true; });
 btnPlace.addEventListener('click', () => { placeQueued = true; });
 btnRemove.addEventListener('click', () => { removeQueued = true; });
+
+function setWeapon(weapon) {
+  if (weapon !== WEAPONS.BOW && weapon !== WEAPONS.SWORD) return;
+  if (currentWeapon === weapon) return;
+  currentWeapon = weapon;
+  if (currentWeapon === WEAPONS.SWORD && arrowCharging) {
+    arrowCharging = false;
+    arrowCharge = 0;
+    if (hudChargeBar) hudChargeBar.classList.add('hidden');
+    if (hudChargeFill) hudChargeFill.style.width = '0%';
+  }
+  updateInfoText('arma', currentWeapon === WEAPONS.SWORD ? 'Espada' : 'Arco');
+  if (bowMesh) bowMesh.visible = currentWeapon === WEAPONS.BOW;
+  if (swordMesh) swordMesh.visible = currentWeapon === WEAPONS.SWORD;
+}
+
+function cycleWeapon() {
+  setWeapon(currentWeapon === WEAPONS.BOW ? WEAPONS.SWORD : WEAPONS.BOW);
+}
 
 function pickBlock() {
   if (chunkMeshes.size === 0) return null;
@@ -884,6 +921,36 @@ function arrowHitsNpc(point) {
   return null;
 }
 
+function swordAttack() {
+  if (currentWeapon !== WEAPONS.SWORD) return;
+  if (swordCooldown > 0) return;
+  swordCooldown = SWORD_COOLDOWN;
+  swordSwing = 0.22;
+  const origin = player.position.clone();
+  origin.y += PLAYER_HEIGHT * 0.4;
+  const forward = new THREE.Vector2(Math.sin(player.yaw), Math.cos(player.yaw)).normalize();
+  if (!charactersGroup) return;
+  for (const char of charactersGroup.children) {
+    const to = tmpTarget.copy(char.position).sub(origin);
+    const horiz = tmpVec2.set(to.x, to.z);
+    const dist = horiz.length();
+    if (dist === 0 || dist > SWORD_RANGE) continue;
+    const dy = Math.abs(to.y);
+    if (dy > NPC_HEIGHT) continue;
+    horiz.divideScalar(dist);
+    const dot = horiz.x * forward.x + horiz.y * forward.y;
+    const angle = Math.acos(Math.max(-1, Math.min(1, dot)));
+    if (angle <= SWORD_ARC * 0.5) {
+      char.userData.hitFlash = 0.75;
+      setCharFlash(char, true);
+      // pequeno empurrão e pulo leve
+      char.userData.velY = Math.max(char.userData.velY, NPC_JUMP * 0.4);
+      char.position.x += forward.x * 0.1;
+      char.position.z += forward.y * 0.1;
+    }
+  }
+}
+
 function updateArrows(dt) {
   const dirForward = new THREE.Vector3(0, 0, 1);
   for (const arrow of arrows) {
@@ -1063,6 +1130,7 @@ function updateHUD(dt) {
   updateInfoText('mundo', `${WORLD_SIZE}x${WORLD_SIZE} | altura ${WORLD_HEIGHT} | ${gameMode === 'flat' ? 'Planície com árvores' : 'Terreno montanhoso'}`);
   const selected = paletteConfig.find((i) => i.type === selectedBlock);
   updateInfoText('bloco', selected ? selected.label : `Tipo ${selectedBlock}`);
+  updateInfoText('arma', currentWeapon === WEAPONS.SWORD ? 'Espada' : 'Arco');
   renderInfoPanel();
 }
 
@@ -1073,6 +1141,22 @@ function animate() {
   updateVisibleChunks();
   updateCharacters(dt);
   updateArrows(dt);
+  swordCooldown = Math.max(0, swordCooldown - dt);
+  if (swordMesh) {
+    if (currentWeapon === WEAPONS.SWORD) {
+      swordMesh.visible = true;
+      if (swordSwing > 0) {
+        swordSwing = Math.max(0, swordSwing - dt);
+        const t = 1 - (swordSwing / 0.22);
+        swordMesh.rotation.x = -0.4 + Math.sin(t * Math.PI) * 0.9;
+        swordMesh.rotation.y = Math.PI * 0.12 + Math.sin(t * Math.PI) * 0.2;
+      } else {
+        swordMesh.rotation.set(-0.1, Math.PI * 0.12, Math.PI * 0.08);
+      }
+    } else {
+      swordMesh.visible = false;
+    }
+  }
   if (arrowCharging) {
     arrowCharge = Math.min(ARROW_CHARGE_MAX, arrowCharge + dt);
     const ratio = Math.max(0, Math.min(1, arrowCharge / ARROW_CHARGE_MAX));
@@ -1555,8 +1639,28 @@ camera.add(bowMesh);
 bowMesh.position.set(0.42, -0.42, -0.75);
 bowMesh.rotation.set(-0.15, Math.PI * 0.08, Math.PI * 0.02);
 
+function makeVoxelSword() {
+  const g = new THREE.Group();
+  const blade = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.65, 0.12), new THREE.MeshLambertMaterial({ color: 0xd8d8e0 }));
+  blade.position.set(0, 0.32, 0);
+  g.add(blade);
+  const guard = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.08, 0.14), new THREE.MeshLambertMaterial({ color: 0x444444 }));
+  guard.position.set(0, -0.05, 0);
+  g.add(guard);
+  const grip = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.25, 0.08), new THREE.MeshLambertMaterial({ color: 0x2a1b10 }));
+  grip.position.set(0, -0.2, 0);
+  g.add(grip);
+  return g;
+}
+
+swordMesh = makeVoxelSword();
+camera.add(swordMesh);
+swordMesh.position.set(0.4, -0.35, -0.6);
+swordMesh.rotation.set(-0.1, Math.PI * 0.12, Math.PI * 0.08);
+
 buildPalette();
 loadSavedSettings();
+setWeapon(currentWeapon);
 resetWorld(DEFAULT_WORLD_SIZE);
 updateVisibleChunks(true);
 animate();
