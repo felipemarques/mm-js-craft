@@ -125,6 +125,15 @@ html, body {
   color: #e6edf7;
 }
 
+#instructions input[type="number"] {
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(15, 18, 26, 0.8);
+  color: #e6edf7;
+  width: 90px;
+}
+
 #crosshair {
   position: fixed;
   top: 50%;
@@ -312,4 +321,25 @@ body.touch-ui #touch-ui {
   color: #c8d3e0;
   font-size: 12px;
   pointer-events: none;
+}
+
+#quit-btn {
+  position: fixed;
+  top: 12px;
+  right: 12px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: linear-gradient(135deg, #ff6b6b, #ff9a8b);
+  color: #0a0c11;
+  font-weight: 700;
+  font-size: 14px;
+  cursor: pointer;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.35);
+  display: none;
+  z-index: 10;
+}
+
+body.unlocked #quit-btn {
+  display: inline-block;
 }

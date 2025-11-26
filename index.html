@@ -43,6 +43,8 @@
       <option value="terrain" selected>Terreno montanhoso</option>
       <option value="flat">Planície com árvores</option>
     </select>
+    <label for="npc-count">Qtd. de personagens:</label>
+    <input type="number" id="npc-count" min="0" max="50" value="5">
     <label for="map-size">Tamanho do mapa:</label>
     <select id="map-size">
       <option value="32">32 x 32</option>
@@ -54,6 +56,7 @@
     <button id="start-btn">Começar</button>
   </div>
   <footer id="footer-note">Código gerado com IA.</footer>
+  <button id="quit-btn" aria-label="Sair do jogo">Quit Game</button>
   <div id="palette"></div>
   <script type="module" src="main.js"></script>
 </body>

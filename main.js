@@ -33,6 +33,7 @@ let jumpQueued = false;
 let placeQueued = false;
 let removeQueued = false;
 let savedSettings = null;
+let desiredNpcCount = 5;
 
 // ---------- DOM / HUD ----------
 const hudStats = document.getElementById('stats');
@@ -43,6 +44,8 @@ const startBtn = document.getElementById('start-btn');
 const gameModeSelect = document.getElementById('game-mode');
 const mapSizeSelect = document.getElementById('map-size');
 const touchDesktopCheckbox = document.getElementById('touch-desktop');
+const npcCountInput = document.getElementById('npc-count');
+const quitBtn = document.getElementById('quit-btn');
 const paletteEl = document.getElementById('palette');
 const freeCursor = document.getElementById('free-cursor');
 const touchUI = document.getElementById('touch-ui');
@@ -52,6 +55,12 @@ const btnJump = document.getElementById('btn-jump');
 const btnPlace = document.getElementById('btn-place');
 const btnRemove = document.getElementById('btn-remove');
 const SETTINGS_KEY = 'voxelcraft/settings/v1';
+const SETTINGS_DEFAULT = {
+  mapSize: DEFAULT_WORLD_SIZE,
+  gameMode: 'terrain',
+  touchDesktop: false,
+  npcCount: 5,
+};
 
 // ---------- Cena básica ----------
 const scene = new THREE.Scene();
@@ -474,6 +483,10 @@ function loadSavedSettings() {
     if (typeof data.touchDesktop === 'boolean') {
       touchDesktopCheckbox.checked = data.touchDesktop;
     }
+    if (typeof data.npcCount === 'number') {
+      npcCountInput.value = data.npcCount;
+      desiredNpcCount = data.npcCount;
+    }
   } catch (e) {
     console.warn('Não foi possível ler configurações salvas', e);
   }
@@ -484,6 +497,7 @@ function persistSettings() {
     gameMode: gameModeSelect.value,
     mapSize: mapSizeSelect.value,
     touchDesktop: touchDesktopCheckbox.checked,
+    npcCount: parseInt(npcCountInput.value, 10) || desiredNpcCount,
   };
   savedSettings = data;
   try {
@@ -562,6 +576,7 @@ function startGame() {
   gameStarted = true;
   const size = parseInt(mapSizeSelect.value, 10) || DEFAULT_WORLD_SIZE;
   gameMode = gameModeSelect.value || 'terrain';
+  desiredNpcCount = parseInt(npcCountInput.value, 10) || desiredNpcCount;
   const prefersTouch = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
   touchEnabled = prefersTouch || touchDesktopCheckbox.checked;
   document.body.classList.toggle('touch-ui', touchEnabled);
@@ -580,6 +595,13 @@ function startGame() {
 }
 
 startBtn.addEventListener('click', startGame);
+quitBtn.addEventListener('click', () => {
+  gameStarted = false;
+  instructions.classList.remove('hidden');
+  document.exitPointerLock?.();
+  document.body.classList.remove('touch-ui');
+  freeCursor.style.display = 'block';
+});
 
 // Impede menu de contexto para liberar o botão direito
 window.addEventListener('contextmenu', (e) => e.preventDefault());
@@ -854,6 +876,8 @@ function arrowHitsNpc(point) {
     const dx = point.x - char.position.x;
     const dz = point.z - char.position.z;
     if (dx * dx + dz * dz <= (NPC_RADIUS + 0.05) * (NPC_RADIUS + 0.05)) {
+      char.userData.hitFlash = 0.75; // duração total para 3 piscadas rápidas
+      setCharFlash(char, true);
       return char;
     }
   }
@@ -1190,6 +1214,23 @@ const charMat = {
   mouth: new THREE.MeshLambertMaterial({ color: 0x993333 }),
 };
 
+function cloneMat(mat) {
+  const m = mat.clone();
+  m.color = mat.color.clone();
+  return m;
+}
+
+function setCharFlash(char, active) {
+  char.traverse((child) => {
+    if (!child.isMesh || !child.userData.baseColor) return;
+    if (active) {
+      child.material.color.setRGB(1, 0.2, 0.2);
+    } else {
+      child.material.color.copy(child.userData.baseColor);
+    }
+  });
+}
+
 function makeVoxelBow() {
   const g = new THREE.Group();
   const limb = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.8, 0.08), new THREE.MeshLambertMaterial({ color: 0x3b2b1c }));
@@ -1214,64 +1255,82 @@ function makeVoxelChar() {
   visual.position.y = -NPC_HEIGHT * 0.5; // alinha o modelo com o centro do colisor
   g.add(visual);
   // Head
-  const head = new THREE.Mesh(charGeo.head, charMat.skin);
+  const head = new THREE.Mesh(charGeo.head, cloneMat(charMat.skin));
   head.position.set(0, 1.65, 0);
+  head.userData.baseColor = head.material.color.clone();
   visual.add(head);
   // Face
-  const eyeWhiteL = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.12, 0.01), charMat.eye);
+  const eyeWhiteL = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.12, 0.01), cloneMat(charMat.eye));
   eyeWhiteL.position.set(-0.12, 1.72, 0.31);
   const eyeWhiteR = eyeWhiteL.clone();
   eyeWhiteR.position.x = 0.12;
-  const pupilL = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.06, 0.02), charMat.pupil);
+  const pupilL = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.06, 0.02), cloneMat(charMat.pupil));
   pupilL.position.set(-0.12, 1.72, 0.32);
   const pupilR = pupilL.clone();
   pupilR.position.x = 0.12;
-  const mouth = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.06, 0.02), charMat.mouth);
+  const mouth = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.06, 0.02), cloneMat(charMat.mouth));
   mouth.position.set(0, 1.55, 0.31);
   visual.add(eyeWhiteL, eyeWhiteR, pupilL, pupilR, mouth);
   // Hair cap
-  const hair = new THREE.Mesh(charGeo.head, charMat.hair);
+  const hair = new THREE.Mesh(charGeo.head, cloneMat(charMat.hair));
   hair.scale.set(1.02, 1.02, 1.02);
   hair.position.copy(head.position).add(new THREE.Vector3(0, 0.03, 0));
   hair.castShadow = false;
+  hair.userData.baseColor = hair.material.color.clone();
   visual.add(hair);
   // Body
-  const body = new THREE.Mesh(charGeo.body, charMat.shirt);
+  const body = new THREE.Mesh(charGeo.body, cloneMat(charMat.shirt));
   body.position.set(0, 0.9, 0);
+  body.userData.baseColor = body.material.color.clone();
   visual.add(body);
   // Arms
-  const armL = new THREE.Mesh(charGeo.arm, charMat.skin);
+  const armL = new THREE.Mesh(charGeo.arm, cloneMat(charMat.skin));
   armL.position.set(-0.48, 0.95, 0);
+  armL.userData.baseColor = armL.material.color.clone();
   visual.add(armL);
-  const armR = new THREE.Mesh(charGeo.arm, charMat.skin);
+  const armR = new THREE.Mesh(charGeo.arm, cloneMat(charMat.skin));
   armR.position.set(0.48, 0.95, 0);
+  armR.userData.baseColor = armR.material.color.clone();
   visual.add(armR);
   // Legs
-  const legL = new THREE.Mesh(charGeo.leg, charMat.pants);
+  const legL = new THREE.Mesh(charGeo.leg, cloneMat(charMat.pants));
   legL.position.set(-0.18, 0.45, 0); // base no chão (altura 0.9 => vai de 0 a 0.9)
+  legL.userData.baseColor = legL.material.color.clone();
   visual.add(legL);
-  const legR = new THREE.Mesh(charGeo.leg, charMat.pants);
+  const legR = new THREE.Mesh(charGeo.leg, cloneMat(charMat.pants));
   legR.position.set(0.18, 0.45, 0);
+  legR.userData.baseColor = legR.material.color.clone();
   visual.add(legR);
   // Boots
-  const bootL = new THREE.Mesh(charGeo.leg, charMat.boot);
+  const bootL = new THREE.Mesh(charGeo.leg, cloneMat(charMat.boot));
   bootL.scale.y = 0.35; // ~0.315 altura
   bootL.position.set(-0.18, 0.1575, 0); // vai de 0 a ~0.315
+  bootL.userData.baseColor = bootL.material.color.clone();
   visual.add(bootL);
-  const bootR = new THREE.Mesh(charGeo.leg, charMat.boot);
+  const bootR = new THREE.Mesh(charGeo.leg, cloneMat(charMat.boot));
   bootR.scale.y = 0.35;
   bootR.position.set(0.18, 0.1575, 0);
+  bootR.userData.baseColor = bootR.material.color.clone();
   visual.add(bootR);
   // Pickaxe
-  const pickHandle = new THREE.Mesh(charGeo.pick, charMat.pickHandle);
+  const pickHandle = new THREE.Mesh(charGeo.pick, cloneMat(charMat.pickHandle));
   pickHandle.rotation.z = Math.PI * 0.25;
   pickHandle.position.set(0.8, 1.2, 0.05);
+  pickHandle.userData.baseColor = pickHandle.material.color.clone();
   visual.add(pickHandle);
-  const pickHead = new THREE.Mesh(charGeo.pickHead, charMat.pickMetal);
+  const pickHead = new THREE.Mesh(charGeo.pickHead, cloneMat(charMat.pickMetal));
   pickHead.rotation.z = Math.PI * -0.25;
   pickHead.position.set(1.0, 1.35, 0.05);
+  pickHead.userData.baseColor = pickHead.material.color.clone();
   visual.add(pickHead);
-  g.traverse((m) => { if (m.isMesh) m.castShadow = false; });
+  g.traverse((m) => {
+    if (m.isMesh) {
+      m.castShadow = false;
+      if (m.material && m.material.color && !m.userData.baseColor) {
+        m.userData.baseColor = m.material.color.clone();
+      }
+    }
+  });
   g.userData.heading = new THREE.Vector2((Math.random() * 2 - 1), (Math.random() * 2 - 1)).normalize();
   g.userData.timer = 1 + Math.random() * 2;
   g.userData.velY = 0;
@@ -1279,13 +1338,14 @@ function makeVoxelChar() {
   g.userData.animPhase = Math.random() * Math.PI * 2;
   g.userData.limbs = { armL, armR, legL, legR };
   g.userData.breakCooldown = 0;
+  g.userData.hitFlash = 0;
   return g;
 }
 
 function spawnCharacters() {
   if (gameMode !== 'flat') return;
   charactersGroup = new THREE.Group();
-  const spawnCount = Math.max(3, Math.floor(WORLD_SIZE / 24));
+  const spawnCount = Math.min(50, Math.max(0, desiredNpcCount));
   const minDistance = 5;
   const playerPos = player.position.clone();
   for (let i = 0; i < spawnCount; i++) {
@@ -1317,6 +1377,14 @@ function updateCharacters(dt) {
       char.userData.breakCooldown = 0;
     }
     char.userData.breakCooldown = Math.max(0, (char.userData.breakCooldown || 0) - dt);
+    if (char.userData.hitFlash > 0) {
+      // 3 piscadas: alterna a cada 0.125s dentro de 0.75s total
+      char.userData.hitFlash = Math.max(0, char.userData.hitFlash - dt);
+      const phase = Math.floor((0.75 - char.userData.hitFlash) / 0.125);
+      const on = phase % 2 === 0 && char.userData.hitFlash > 0;
+      setCharFlash(char, on);
+      if (char.userData.hitFlash <= 0) setCharFlash(char, false);
+    }
     char.userData.timer -= dt;
     if (char.userData.timer <= 0) {
       const angle = Math.random() * Math.PI * 2;
