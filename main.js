@@ -468,7 +468,7 @@ function toggleInfoVisibility() {
 
 function refreshStaticInfo() {
   const touchControls = 'Joystick esquerdo move, direito olha; botões Pular/Colocar/Remover.';
-  const kbControls = 'WASD mover, Espaço pular, Shift correr, clique esq. coloca, dir. remove, scroll troca bloco, F atira flecha.';
+  const kbControls = 'WASD mover, Espaço pular, Shift correr, clique esq. coloca, dir. remove, scroll troca bloco, 1 Espada, 2 Arco, F ataca (golpe ou flecha).';
   setInfoRecord('controls', { label: 'Controles', text: touchEnabled ? touchControls : kbControls });
   setInfoRecord('hud', { label: 'HUD', text: 'Pressione H para mostrar/ocultar este painel.' });
   setInfoRecord('input', { label: 'Entrada', text: touchEnabled ? 'Toque/HUD na tela' : 'Mouse + teclado' });
@@ -541,11 +541,10 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'Digit2') {
     setWeapon(WEAPONS.BOW);
   }
-  if (e.code === 'KeyE') {
-    swordAttack();
-  }
-  if (e.code === 'KeyF' && currentWeapon === WEAPONS.BOW) {
-    if (!arrowCharging) {
+  if (e.code === 'KeyF') {
+    if (currentWeapon === WEAPONS.SWORD) {
+      swordAttack();
+    } else if (currentWeapon === WEAPONS.BOW && !arrowCharging) {
       arrowCharging = true;
       arrowCharge = 0;
       if (hudChargeBar) hudChargeBar.classList.remove('hidden');
